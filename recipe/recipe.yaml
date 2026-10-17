@@ -66,7 +66,8 @@ requirements:
     # library: ocaml's run_export pins the compiler patch version
     - ocaml ${{ ocaml_compiler_version }}.*
     # cross: the build-time generators link compiler-libs, which pulls -lzstd for the target
-    - if: build_platform != target_platform and unix
+    # (not s390x: no zstd package there, and its ocaml is built without zstd)
+    - if: build_platform != target_platform and unix and target_platform != "linux-s390x"
       then:
         - zstd
     # the noarch ocaml metapackage does not pin the windows toolchain track
