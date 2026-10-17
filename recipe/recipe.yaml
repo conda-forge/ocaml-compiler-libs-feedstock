@@ -65,6 +65,10 @@ requirements:
   host:
     # library: ocaml's run_export pins the compiler patch version
     - ocaml ${{ ocaml_compiler_version }}.*
+    # cross: the build-time generators link compiler-libs, which pulls -lzstd for the target
+    - if: build_platform != target_platform and unix
+      then:
+        - zstd
     # the noarch ocaml metapackage does not pin the windows toolchain track
     - if: not unix
       then:
@@ -74,6 +78,9 @@ requirements:
     - if: not unix
       then:
         - ocaml_${{ target_platform }} ${{ ocaml_compiler_version }}.* ${{ c_toolchain }}
+  ignore_run_exports:
+    from_package:
+      - zstd
 
 tests:
   - package_contents:
