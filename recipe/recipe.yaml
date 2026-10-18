@@ -23,10 +23,11 @@ build:
     - if: unix
       then:
         # cross: ocamlopt's link does not search the host prefix; the build-time
-        # generators link compiler-libs, which pulls -lzstd for the target
+        # generators link compiler-libs, which pulls -lzstd for the target, and
+        # run under qemu, so they also need the rpath to find libzstd.so
         - if: build_platform != target_platform and target_platform != "linux-s390x"
           then:
-            - export OCAMLPARAM="_,ccopt=-L${PREFIX}/lib"
+            - export OCAMLPARAM="_,ccopt=-L${PREFIX}/lib -Xlinker -rpath -Xlinker ${PREFIX}/lib"
         - dune build --profile=release -p ocaml-compiler-libs @install
         - dune install --prefix="${PREFIX}" --libdir="${PREFIX}/lib/ocaml" ocaml-compiler-libs
       else:
