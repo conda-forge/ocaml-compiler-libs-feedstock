@@ -1,7 +1,9 @@
 context:
   version: "0.17.0"
-  build_number: 1
+  build_number: 2
 
+  # ELF machine token `file` prints for the target; checked by the arch test
+  elf_arch: ${{ "x86-64" if target_platform == "linux-64" else "aarch64" if target_platform == "linux-aarch64" else "PowerPC" if target_platform == "linux-ppc64le" else "RISC-V" if target_platform == "linux-riscv64" else "S/390" if target_platform == "linux-s390x" else "" }}
   # ocaml_win-64 ships gcc_* and vs2022_* at the same version/build; name the track.
   c_toolchain: ${{ "" if unix else c_compiler ~ "_*" }}
   library: ${{ "Library/" if not unix else "" }}
@@ -20,12 +22,20 @@ build:
   script:
     - if: unix
       then:
+        # cross: ocamlopt's link does not search the host prefix; the build-time
+        # generators link compiler-libs, which pulls -lzstd for the target, and
+        # run under qemu, so they also need the rpath to find libzstd.so
+        - if: build_platform != target_platform and target_platform != "linux-s390x"
+          then:
+            - export OCAMLPARAM="_,ccopt=-L${PREFIX}/lib -Xlinker -rpath -Xlinker ${PREFIX}/lib"
         - dune build --profile=release -p ocaml-compiler-libs @install
         - dune install --prefix="${PREFIX}" --libdir="${PREFIX}/lib/ocaml" ocaml-compiler-libs
       else:
         # Plain cmd.exe, not MSYS2 bash: pure OCaml, no stubs, so no wrapper is
         # needed and the backslashed install prefix reaches dune intact. The
         # dune cache trips over mixed path separators on windows.
+        # dune install also opens the shared cache; disable it for every dune call
+        - set DUNE_CACHE=disabled
         - dune build --cache=disabled --profile=release -p ocaml-compiler-libs @install
         - if errorlevel 1 exit 1
         - dune install --prefix="%LIBRARY_PREFIX%" --libdir="%LIBRARY_PREFIX%\lib\ocaml" ocaml-compiler-libs
@@ -51,6 +61,8 @@ requirements:
     - if: build_platform != target_platform and unix
       then:
         - ocaml_${{ build_platform }} ${{ ocaml_compiler_version }}.*
+        # ocaml >=17: the cross compiler activates itself (shims, OCAMLLIB, host OCAMLPATH) and has natdynlink
+        - ocaml_${{ target_platform }}[version="${{ ocaml_compiler_version }}.*", build_number=">=17"]
     # windows cross: the self-contained gcc track needs no vcvars
     - if: build_platform != target_platform and not unix
       then:
@@ -59,6 +71,11 @@ requirements:
   host:
     # library: ocaml's run_export pins the compiler patch version
     - ocaml ${{ ocaml_compiler_version }}.*
+    # cross: the build-time generators link compiler-libs, which pulls -lzstd for the target
+    # (not s390x: no zstd package there, and its ocaml is built without zstd)
+    - if: build_platform != target_platform and unix and target_platform != "linux-s390x"
+      then:
+        - zstd
     # the noarch ocaml metapackage does not pin the windows toolchain track
     - if: not unix
       then:
@@ -68,6 +85,9 @@ requirements:
     - if: not unix
       then:
         - ocaml_${{ target_platform }} ${{ ocaml_compiler_version }}.* ${{ c_toolchain }}
+  ignore_run_exports:
+    from_package:
+      - zstd
 
 tests:
   - package_contents:
@@ -75,6 +95,36 @@ tests:
       files:
         - ${{ library }}lib/ocaml/ocaml-compiler-libs/*
         - ${{ library }}doc/ocaml-compiler-libs/*
+  # cross lanes test under qemu binfmt, which would also run a build-machine
+  # binary; check the native objects' ELF headers name the target instead
+  - if: linux
+    then:
+      script:
+        # test scripts are not jinja-rendered; hand the token over by env
+        env:
+          ELF_ARCH: ${{ elf_arch }}
+        content:
+          - |
+            set -eu
+            n=0
+            tmp=$(mktemp -d)
+            for a in $(find "${PREFIX}/lib/ocaml/ocaml-compiler-libs" -name '*.a'); do
+              n=$((n + 1))
+              mkdir "${tmp}/${n}"
+              (cd "${tmp}/${n}" && ar x "${a}")
+              find "${tmp}/${n}" -name '*.o' -exec file -L {} + | tee "${tmp}/out"
+              if grep -v "${ELF_ARCH}" "${tmp}/out"; then exit 1; fi
+            done
+            if [ "${n}" -eq 0 ]; then echo "no .a found"; exit 1; fi
+            for s in "${PREFIX}"/lib/ocaml/stublibs/dll*ocaml-compiler-libs*.so; do
+              [ -e "${s}" ] || continue
+              file -L "${s}" | tee "${tmp}/out"
+              if grep -v "${ELF_ARCH}" "${tmp}/out"; then exit 1; fi
+            done
+      requirements:
+        build:
+          - file
+          - binutils
 
 about:
   homepage: https://github.com/janestreet/ocaml-compiler-libs
